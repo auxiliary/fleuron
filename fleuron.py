@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 """
-    Fleuron ver 0.2 - A silent flash drive copier.
+    Fleuron ver 0.3 - A silent flash drive copier.
     Copyright (C) 2012  Mohammad A.Raji <moh@nuinet.com>
 
     This program is free software: you can redistribute it and/or modify
@@ -22,29 +22,29 @@ import time
 import os, sys
 import Queue
 import shutil
+import fnmatch
+from multiprocessing import Process
 import random
 import logging
+import yaml
 import dbus
 import gobject
 from dbus.mainloop.glib import DBusGMainLoop
 
+script_path = os.path.realpath(__file__)
+os.chdir(script_path[:script_path.rfind("/")])
 
-MOUNT_TIMEOUT = 5 #Seconds
-FILE_SIZE_LIMIT = 30 * 1024 * 1024 #Bytes
-RANDOM_WAITING_MIN = 2 #Seconds
-RANDOM_WAITING_MAX = 9 #Seconds
-PROBABILITY_OF_WAITING = 30 #Percentage
-LOG_FILENAME = "fleuron_log.log"
-LOG_FILE_MAX_SIZE = 50 * 1024 #Bytes
-BLACKLIST_FILENAME = "fleuron_blacklist"
-VERSION = 0.2
+CONFIG_FILENAME = "config.yaml"
+VERSION = 0.3
+#Read the configuration file
+config_file = file(CONFIG_FILENAME, 'r')
+configs = yaml.load(config_file)
 
 DBusGMainLoop(set_as_default=True)
 bus = dbus.SystemBus()
 proxy = bus.get_object("org.freedesktop.UDisks", "/org/freedesktop/UDisks")
 iface = dbus.Interface(proxy, "org.freedesktop.UDisks")
 
-Q = Queue.Queue()
 
 def get_dev_info(dev_path):
     for dev in iface.EnumerateDevices():
@@ -52,14 +52,14 @@ def get_dev_info(dev_path):
             device = bus.get_object("org.freedesktop.UDisks", dev);
             device_info = dbus.Interface(device, dbus.PROPERTIES_IFACE)
             return device_info
-        
+    
 def device_added_callback(dev_path):
-    if os.stat(LOG_FILENAME).st_size > LOG_FILE_MAX_SIZE:
+    if os.stat(configs["log_file_name"]).st_size > configs["log_file_max_size"]:
         clear_logs()
 
     dev_info = get_dev_info(dev_path)
     is_mounted  = dev_info.Get("org.freedesktop.UDisks.Device", "DeviceIsMounted")
-    timeout = MOUNT_TIMEOUT
+    timeout = configs["mount_timeout"]
     while is_mounted == False and timeout > 0:
         time.sleep(0.5)
         is_mounted  = dev_info.Get("org.freedesktop.UDisks.Device", "DeviceIsMounted")
@@ -75,45 +75,49 @@ def device_added_callback(dev_path):
         
         device_uuid = dev_info.Get("org.freedesktop.UDisks.Device", "IdUuid").lower()
         device_label = dev_info.Get("org.freedesktop.UDisks.Device", "IdLabel").lower()
-        blacklist=""
         
-        if os.path.exists(BLACKLIST_FILENAME):
-            with open(BLACKLIST_FILENAME) as blacklist_fh:
-                blacklist = blacklist_fh.readlines()
-        for entry in blacklist:
-            if entry.startswith('#'):
-                continue
+        for entry in configs["device_blacklist"]:
             entry = entry.strip().lower()
             if (entry == device_uuid) or (entry == device_label):
                 log.info("Device is blacklisted.")
                 return -1
-        
-        copy(mount_point)
-    
+        p = Process(target = copy, args=(mount_point,))
+        p.start()
+
 def device_removed_callback(dev_path):
     log.warning('Removed ' + dev_path)
-    Q.queue.clear()
 
 def device_changed_callback(dev_path):
     pass
-
-def sorted_listdir(path):
-    return sorted(os.listdir(path))
     
 def random_wait():
     rand = random.Random()
     wait_probability = rand.randint(1, 100)
-    if(wait_probability > PROBABILITY_OF_WAITING):
+    if(wait_probability > configs["probability_of_waiting"]):
         return 0
-    wait_time = rand.randint(RANDOM_WAITING_MIN, RANDOM_WAITING_MAX)
+    wait_time = rand.randint(configs["random_waiting_min"], configs["random_waiting_max"])
     log.info('Waiting for ' + str(wait_time) + ' seconds...')
     time.sleep(wait_time)
     return wait_time
     
+def sorted_listdir(path):
+    return sorted(os.listdir(path))
+
+def matches_blacklist(file_name):
+    for pattern in configs["file_blacklist"]:
+        if(fnmatch.fnmatch(file_name, pattern) == True):
+            return True
+    return False
+    
 def copy(src_path, dest_path=os.curdir):
+    Q = Queue.Queue()
     for dir in sorted_listdir(src_path):
         full_dir_path = src_path + "/" + dir
         if os.path.isdir(full_dir_path):
+            directory_name = full_dir_path[full_dir_path.rfind("/") + 1:]
+            if(matches_blacklist(directory_name) == True):
+                log.info("Directory "+directory_name+" is blacklisted.")
+                continue
             Q.put(full_dir_path)
         else:#Then it's a file
             copy_file(full_dir_path, dest_path)
@@ -134,13 +138,22 @@ def copy(src_path, dest_path=os.curdir):
                 Q.put(full_dir_path)
             else:
                 copied = copy_file(full_dir_path, dest_path)
-    
+
 def copy_file(full_file_path, dest_path=os.curdir):
-    if os.stat(full_file_path).st_size > FILE_SIZE_LIMIT:
+    #Check the file size
+    file_size = os.stat(full_file_path).st_size
+    if file_size > configs["file_size_limits"]["max"] or file_size < configs["file_size_limits"]["min"]:
         return
+    
     file_path = full_file_path[0:full_file_path.rfind("/")]
     file_path = file_path[1:]#To ommit the first slash so that the path does not start with a slash
-    file_name = full_file_path[full_file_path.rfind("/"):]
+    file_name = full_file_path[full_file_path.rfind("/") + 1:]
+    
+    # Check the file blacklist
+    if(matches_blacklist(file_name) == True):
+        log.info("File "+file_name+" is blacklisted.")
+        return
+
     if os.path.exists("./" + file_path) == False:
         os.makedirs(file_path)
     if os.path.exists("./" + file_path + "/" + file_name) == False:
@@ -151,7 +164,7 @@ def copy_file(full_file_path, dest_path=os.curdir):
         return False
 
 def clear_logs():
-    with open(LOG_FILENAME, 'w'):
+    with open(configs["log_file_name"], 'w'):
         pass
     
 if __name__ == '__main__':
@@ -161,7 +174,7 @@ if __name__ == '__main__':
     
     log = logging.getLogger()
     ch = logging.StreamHandler()
-    fh = logging.FileHandler(LOG_FILENAME)
+    fh = logging.FileHandler(configs["log_file_name"])
     log.addHandler(ch)
     log.addHandler(fh)
     ch_fmt = logging.Formatter("%(levelname)s\t: %(message)s")

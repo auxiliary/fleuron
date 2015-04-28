@@ -1,0 +1,12 @@
+# Configuration file for Fleuron
+file_size_limits: #In bytes
+    min: 1
+    max: 31457280
+file_blacklist: ["*.pdf", ".*"]
+log_file_name: fleuron_log.log
+log_file_max_size: 51200
+device_blacklist: ["Black Hole"]
+mount_timeout: 5
+random_waiting_min: 2 #Seconds
+random_waiting_max: 9 #Seconds
+probability_of_waiting: 30 #Percentage

@@ -1,0 +1,6 @@
+Fleuron version 0.3 changelog:
+
+- Added Multiprocess support for copying multiple devices at the same time
+- Added config file
+- Added filename blacklist with wildcard support
+- Added minimum file size limitation setting
